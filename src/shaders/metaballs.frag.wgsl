@@ -26,7 +26,8 @@ struct Viewport {
 
 
 const BASE_COLOR = vec4f(0.0, 0.0, 0.0, 1.0);
-const METABALL_THRESHOLD = 1.2;
+// stickyness lower = more sticky
+const METABALL_THRESHOLD = 0.8;
 
 @fragment
 fn main(@builtin(position) coord: vec4f) -> @location(0) vec4f {

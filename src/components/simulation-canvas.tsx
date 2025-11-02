@@ -267,6 +267,26 @@ const SimulationCanvas = () => {
           const mass2 = ball2.radius * ball2.radius;
           const totalMass = mass1 + mass2;
 
+          // Handle position wrapping when merging across edges
+          let x2 = ball2.x;
+          let y2 = ball2.y;
+          if (Math.abs(ball1.x - ball2.x) > viewportWidth / 2) {
+            x2 = ball2.x < viewportWidth / 2 ? ball2.x + viewportWidth : ball2.x - viewportWidth;
+          }
+          if (Math.abs(ball1.y - ball2.y) > viewportHeight / 2) {
+            y2 = ball2.y < viewportHeight / 2 ? ball2.y + viewportHeight : ball2.y - viewportHeight;
+          }
+
+          // Position weighted by mass - larger ball pulls the center more
+          ball1.x = (ball1.x * mass1 + x2 * mass2) / totalMass;
+          ball1.y = (ball1.y * mass1 + y2 * mass2) / totalMass;
+
+          // Wrap combined position back into viewport
+          if (ball1.x < 0) ball1.x += viewportWidth;
+          if (ball1.x > viewportWidth) ball1.x -= viewportWidth;
+          if (ball1.y < 0) ball1.y += viewportHeight;
+          if (ball1.y > viewportHeight) ball1.y -= viewportHeight;
+
           ball1.radius = Math.sqrt(totalMass);
 
           // Velocity weighted by mass (momentum conservation)
