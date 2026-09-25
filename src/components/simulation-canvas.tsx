@@ -518,6 +518,11 @@ const SimulationCanvas = () => {
 
       // Add click handler to explode balls
       canvas.addEventListener("click", (event) => {
+        // Go fullscreen on tap (needs a user gesture); unsupported on iPhone Safari
+        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen({ navigationUI: "hide" }).catch(() => { });
+        }
+
         if (!deviceRef.current) return;
         const rect = canvas.getBoundingClientRect();
         const devicePixelRatio = window.devicePixelRatio;
