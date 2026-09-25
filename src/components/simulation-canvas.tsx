@@ -17,6 +17,8 @@ type Ball = {
   g: number;
   b: number;
   canMergeAfter?: number; // Timestamp when ball can merge again
+  bornAt: number; // Timestamp when ball starts growing in
+  dieAt: number; // Timestamp when ball has fully shrunk away
 } & Point2D;
 
 const initWgpuDeviceAndAdapter = async () => {
@@ -41,6 +43,36 @@ const initWgpuDeviceAndAdapter = async () => {
 
 const CAMERA_SPEED = 0.2;
 const MIN_VELOCITY = 50; // Minimum velocity in pixels per second
+
+// Ball lifecycle, times in ms
+const FADE_DURATION = 1500; // How long balls take to grow in / shrink away
+const MIN_LIFETIME = 15000;
+const MAX_LIFETIME = 35000;
+const SPAWN_INTERVAL = 2000;
+const MIN_BALLS = 6;
+const MAX_BALLS = 16;
+const MAX_COVERAGE = 0.3; // Stop spawning once balls cover this fraction of the screen
+
+const randomLifetime = () => MIN_LIFETIME + Math.random() * (MAX_LIFETIME - MIN_LIFETIME);
+
+// 0 -> 1 while growing in, 1 while alive, 1 -> 0 while shrinking away
+const lifeScale = (ball: Ball, now: number) => {
+  const t = clamp(Math.min((now - ball.bornAt) / FADE_DURATION, (ball.dieAt - now) / FADE_DURATION), 0, 1);
+  return t * t * (3 - 2 * t); // smoothstep
+};
+
+const isFading = (ball: Ball, now: number) => now < ball.bornAt + FADE_DURATION || now > ball.dieAt - FADE_DURATION;
+
+// Muted neon palette (rgb 0-1). Kept dim because the shader can brighten ball centers up to 1.6x
+const NIGHTCLUB_COLORS: [number, number, number][] = [
+  [0.55, 0.05, 0.45], // magenta
+  [0.6, 0.08, 0.3], // hot pink
+  [0.35, 0.05, 0.6], // purple
+  [0.2, 0.08, 0.65], // indigo
+  [0.05, 0.2, 0.65], // electric blue
+  [0.02, 0.45, 0.55], // teal
+  [0.55, 0.02, 0.12], // deep red
+];
 
 // why does this function not exist in js?
 const clamp = (value: number, min: number, max: number) => {
@@ -71,7 +103,7 @@ const cameraZUniformSize = FLOAT_SIZE;
 const timeUniformSize = FLOAT_SIZE;
 const viewportUniformSize = FLOAT_SIZE * 4; // x, y, width, height
 
-const ballsToBufferValues = (balls: Ball[]) => {
+const ballsToBufferValues = (balls: Ball[], now: number) => {
   const ballCount = balls.length;
   const ballUniformSize = FLOAT_SIZE * ballStride * ballCount;
 
@@ -79,7 +111,7 @@ const ballsToBufferValues = (balls: Ball[]) => {
   balls.forEach((ball, index) => {
     bufferValues[index * ballStride] = ball.x;
     bufferValues[index * ballStride + 1] = ball.y;
-    bufferValues[index * ballStride + 2] = ball.radius;
+    bufferValues[index * ballStride + 2] = ball.radius * lifeScale(ball, now);
     bufferValues[index * ballStride + 3] = ball.velocity.x;
     bufferValues[index * ballStride + 4] = ball.velocity.y;
     bufferValues[index * ballStride + 5] = ball.r;
@@ -117,8 +149,11 @@ const SimulationCanvas = () => {
   let timeRef = useRef(0);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const lastSpawnRef = useRef(0);
 
-  const spawnBall = (width: number, height: number, existingBalls: Ball[]) => {
+  const now = () => new Date().getTime();
+
+  const spawnBall = (width: number, height: number, existingBalls: Ball[]): Ball => {
     const avgDimension = (width + height) / 2;
     let x: number, y: number, radius: number;
     let attempts = 0;
@@ -143,27 +178,12 @@ const SimulationCanvas = () => {
       }
     } while (attempts < maxAttempts);
 
-    // Generate more vibrant, saturated colors
-    // Pick a random hue and make it saturated
-    const hue = Math.random();
-    let r, g, b;
-
-    if (hue < 0.33) {
-      // Red-ish colors
-      r = 0.7 + Math.random() * 0.3;
-      g = Math.random() * 0.3;
-      b = Math.random() * 0.3;
-    } else if (hue < 0.66) {
-      // Green-ish colors
-      r = Math.random() * 0.3;
-      g = 0.7 + Math.random() * 0.3;
-      b = Math.random() * 0.3;
-    } else {
-      // Blue-ish colors
-      r = Math.random() * 0.3;
-      g = Math.random() * 0.3;
-      b = 0.7 + Math.random() * 0.3;
-    }
+    // Pick a nightclub color, slightly jittered so balls aren't identical
+    const [baseR, baseG, baseB] = NIGHTCLUB_COLORS[Math.floor(Math.random() * NIGHTCLUB_COLORS.length)];
+    const jitter = () => (Math.random() - 0.5) * 0.08;
+    const r = clamp(baseR + jitter(), 0, 1);
+    const g = clamp(baseG + jitter(), 0, 1);
+    const b = clamp(baseB + jitter(), 0, 1);
 
     return {
       x,
@@ -176,6 +196,8 @@ const SimulationCanvas = () => {
       r,
       g,
       b,
+      bornAt: now(),
+      dieAt: now() + randomLifetime(),
     };
   };
 
@@ -248,10 +270,11 @@ const SimulationCanvas = () => {
         const ball1 = ballsRef.current[i];
         const ball2 = ballsRef.current[j];
 
-        // Skip if either ball is on cooldown
+        // Skip if either ball is on cooldown or still growing in / shrinking away
         const currentTime = new Date().getTime();
         if ((ball1.canMergeAfter && currentTime < ball1.canMergeAfter) ||
-          (ball2.canMergeAfter && currentTime < ball2.canMergeAfter)) {
+          (ball2.canMergeAfter && currentTime < ball2.canMergeAfter) ||
+          isFading(ball1, currentTime) || isFading(ball2, currentTime)) {
           continue;
         }
 
@@ -289,6 +312,9 @@ const SimulationCanvas = () => {
 
           ball1.radius = Math.sqrt(totalMass);
 
+          // Lifetime weighted by mass, so merging doesn't extend how long the mass sticks around
+          ball1.dieAt = (ball1.dieAt * mass1 + ball2.dieAt * mass2) / totalMass;
+
           // Velocity weighted by mass (momentum conservation)
           // Small balls have less influence on large balls
           ball1.velocity.x = (ball1.velocity.x * mass1 + ball2.velocity.x * mass2) / totalMass;
@@ -306,10 +332,20 @@ const SimulationCanvas = () => {
       }
     }
 
-    // Remove deleted balls in one pass
-    if (toDelete.size > 0) {
-      ballsRef.current = ballsRef.current.filter((_, index) => !toDelete.has(index));
+    const previousBallCount = ballsRef.current.length;
 
+    // Remove merged and expired balls in one pass
+    ballsRef.current = ballsRef.current.filter((ball, index) => !toDelete.has(index) && newTime < ball.dieAt);
+
+    // Gradually spawn new balls, and always keep a minimum around
+    const coverage = ballsRef.current.reduce((area, ball) => area + Math.PI * ball.radius * ball.radius, 0) / (viewportWidth * viewportHeight);
+    if (ballsRef.current.length < MIN_BALLS ||
+      (ballsRef.current.length < MAX_BALLS && coverage < MAX_COVERAGE && newTime - lastSpawnRef.current > SPAWN_INTERVAL)) {
+      ballsRef.current.push(spawnBall(viewportWidth, viewportHeight, ballsRef.current));
+      lastSpawnRef.current = newTime;
+    }
+
+    if (ballsRef.current.length !== previousBallCount) {
       // Recreate ball buffer with new size
       if (ballBufferRef.current) {
         ballBufferRef.current.destroy();
@@ -348,7 +384,7 @@ const SimulationCanvas = () => {
     const commandEncoder = deviceRef.current.createCommandEncoder();
     const textureView = contextRef.current.getCurrentTexture().createView();
 
-    const ballBufferValues = ballsToBufferValues(ballsRef.current);
+    const ballBufferValues = ballsToBufferValues(ballsRef.current, newTime);
 
     deviceRef.current.queue.writeBuffer(colorBufferRef.current, 0, colorBufferValuesRef.current);
     deviceRef.current.queue.writeBuffer(ballBufferRef.current, 0, ballBufferValues);
@@ -440,7 +476,10 @@ const SimulationCanvas = () => {
         const width = canvas.width;
         const height = canvas.height;
         for (let i = 0; i < count; i++) {
-          balls.push(spawnBall(width, height, balls));
+          const ball = spawnBall(width, height, balls);
+          // Initial balls start fully grown
+          ball.bornAt -= FADE_DURATION;
+          balls.push(ball);
         }
         return balls;
       };
@@ -576,10 +615,13 @@ const SimulationCanvas = () => {
                   x: ball.velocity.x + Math.cos(angle) * explosionSpeed,
                   y: ball.velocity.y + Math.sin(angle) * explosionSpeed,
                 },
-                r: Math.max(0, Math.min(1, ball.r + (Math.random() - 0.5) * 0.5)),
-                g: Math.max(0, Math.min(1, ball.g + (Math.random() - 0.5) * 0.5)),
-                b: Math.max(0, Math.min(1, ball.b + (Math.random() - 0.5) * 0.5)),
+                r: Math.max(0, Math.min(1, ball.r + (Math.random() - 0.5) * 0.1)),
+                g: Math.max(0, Math.min(1, ball.g + (Math.random() - 0.5) * 0.1)),
+                b: Math.max(0, Math.min(1, ball.b + (Math.random() - 0.5) * 0.1)),
                 canMergeAfter: currentTime + mergeCooldown,
+                // Fragments appear at full size and outlive the parent at least briefly
+                bornAt: currentTime - FADE_DURATION,
+                dieAt: Math.max(ball.dieAt, currentTime + FADE_DURATION * 2),
               });
             }
 
@@ -612,6 +654,7 @@ const SimulationCanvas = () => {
       });
 
       timeRef.current = new Date().getTime();
+      lastSpawnRef.current = timeRef.current;
       loop();
     }
     setupWebGpu();
