@@ -31,22 +31,17 @@ const METABALL_THRESHOLD = 0.8;
 
 @fragment
 fn main(@builtin(position) coord: vec4f) -> @location(0) vec4f {
-    // Normalize pixel coordinates to 0-1 range using viewport dimensions
-    let uv = coord.xy / vec2f(viewport.width, viewport.height);
+    let viewport_size = vec2f(viewport.width, viewport.height);
+    // Single scale for both axes so balls stay round regardless of aspect ratio
+    let scale = (viewport.width + viewport.height) / 2.0;
 
     var sum = 0.0;
     var accumulated_color = vec3f(0.0, 0.0, 0.0);
     var total_influence = 0.0;
     
     for (var i = 0u; i < arrayLength(&balls); i++) {
-        // Normalize ball position to 0-1 range (only x and y, no z)
-        let ball_pos = vec2f(
-            balls[i].x / viewport.width, 
-            balls[i].y / viewport.height
-        );
-        // Normalize radius to 0-1 range based on average dimension
-        let normalized_radius = balls[i].radius / ((viewport.width + viewport.height) / 2.0);
-        let influence = get_metaball(uv, ball_pos, normalized_radius);
+        let ball_pos = vec2f(balls[i].x, balls[i].y);
+        let influence = get_metaball(coord.xy, ball_pos, balls[i].radius, viewport_size, scale);
         sum += influence;
         
         // Accumulate color weighted by influence
@@ -66,20 +61,22 @@ fn main(@builtin(position) coord: vec4f) -> @location(0) vec4f {
     return color;
 }
 
-fn get_metaball(pos: vec2f, ball_pos: vec2f, radius: f32) -> f32 {
+fn get_metaball(pos: vec2f, ball_pos: vec2f, radius: f32, size: vec2f, scale: f32) -> f32 {
     // this makes it work around wrapped edges, claude smart
-    // Calculate wrapped distance (toroidal topology)
-    var dx = abs(ball_pos.x - pos.x);
-    var dy = abs(ball_pos.y - pos.y);
+    // Calculate wrapped distance (toroidal topology) in pixels
+    var d = abs(ball_pos - pos);
     
-    if (dx > 0.5) {
-        dx = 1.0 - dx;
+    if (d.x > size.x / 2.0) {
+        d.x = size.x - d.x;
     }
-    if (dy > 0.5) {
-        dy = 1.0 - dy;
+    if (d.y > size.y / 2.0) {
+        d.y = size.y - d.y;
     }
     
-    let dist_sq = dx * dx + dy * dy;
+    // Normalize with the same scale on both axes
+    d = d / scale;
+    let r = radius / scale;
+    let dist_sq = dot(d, d);
     // prevent divide by 0
-    return (radius * radius) / (dist_sq + 0.0001);
+    return (r * r) / (dist_sq + 0.0001);
 }
